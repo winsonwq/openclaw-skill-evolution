@@ -1,0 +1,311 @@
+/**
+ * OpenClaw Skill Evolution Hook
+ * 
+ * Listens for message:preprocessed events and tracks successful tool patterns.
+ * When the same tool succeeds 3 times, generates a SKILL.md.
+ */
+
+import * as fs from 'fs';
+import * as path from 'path';
+import * as os from 'os';
+import { fileURLToPath } from 'url';
+
+// Types
+interface ToolCall {
+  name: string;
+  input?: Record<string, unknown>;
+}
+
+interface HookEvent {
+  type: string;
+  action?: string;
+  sessionKey: string;
+  timestamp: Date;
+  messages?: string[];
+  context: Record<string, unknown>;
+}
+
+// Config
+interface Config {
+  enabled: boolean;
+  threshold: number;
+  skill_dir: string;
+  patterns_dir: string;
+  log_level: string;
+  notify_on_update: boolean;
+  exclude_patterns: string[];
+}
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const CONFIG_PATH = path.join(os.homedir(), '.openclaw', 'configs', 'skill-evolution.json');
+const LOG_DIR = path.join(os.homedir(), '.openclaw', 'logs');
+const LOG_FILE = path.join(LOG_DIR, 'skill-evolution.log');
+const DEFAULT_THRESHOLD = 3;
+
+const DEFAULT_CONFIG: Config = {
+  enabled: true,
+  threshold: DEFAULT_THRESHOLD,
+  skill_dir: path.join(os.homedir(), '.openclaw', 'workspace', 'skills'),
+  patterns_dir: '',
+  log_level: 'INFO',
+  notify_on_update: true,
+  exclude_patterns: [],
+};
+
+// State
+interface PatternEntry {
+  count: number;
+  first_seen: string;
+  last_seen: string;
+  skill_path?: string;
+  success_examples: ToolCall[];
+}
+
+interface Registry {
+  patterns: Record<string, PatternEntry>;
+}
+
+let registry: Registry = { patterns: {} };
+let config: Config = { ...DEFAULT_CONFIG };
+let initialized = false;
+
+// Logger
+type LogLevel = 'DEBUG' | 'INFO' | 'WARN' | 'ERROR';
+const LEVEL_PRIORITY: Record<LogLevel, number> = { DEBUG: 0, INFO: 1, WARN: 2, ERROR: 3 };
+
+function shouldLog(level: LogLevel): boolean {
+  const configLevel = (config.log_level as LogLevel) ?? 'INFO';
+  return LEVEL_PRIORITY[level] >= LEVEL_PRIORITY[configLevel];
+}
+
+async function log(level: LogLevel, module: string, msg: string, data?: object): Promise<void> {
+  if (!shouldLog(level)) return;
+  const ts = new Date().toISOString();
+  const line = data ? `[${ts}] [${level}] [${module}] ${msg} ${JSON.stringify(data)}` : `[${ts}] [${level}] [${module}] ${msg}`;
+  try {
+    await fs.promises.mkdir(LOG_DIR, { recursive: true });
+    await fs.promises.appendFile(LOG_FILE, line + '\n');
+  } catch {}
+  if (level === 'ERROR') console.error(line); else if (level !== 'DEBUG') console.log(line);
+}
+
+// Config loading
+async function loadConfig(): Promise<void> {
+  try {
+    const user = JSON.parse(await fs.promises.readFile(CONFIG_PATH, 'utf-8'));
+    config = { ...DEFAULT_CONFIG, ...user };
+  } catch {
+    config = { ...DEFAULT_CONFIG };
+  }
+  config.patterns_dir = path.join(__dirname, 'patterns');
+  await log('INFO', 'config', 'loaded', config);
+}
+
+// Registry persistence
+function getRegistryPath(): string {
+  return path.join(config.patterns_dir, 'registry.json');
+}
+
+async function loadRegistry(): Promise<void> {
+  try {
+    const data = await fs.promises.readFile(getRegistryPath(), 'utf-8');
+    registry = JSON.parse(data);
+    await log('DEBUG', 'registry', 'loaded', { entries: Object.keys(registry.patterns).length });
+  } catch {
+    registry = { patterns: {} };
+  }
+}
+
+async function saveRegistry(): Promise<void> {
+  try {
+    await fs.promises.mkdir(config.patterns_dir, { recursive: true });
+    await fs.promises.writeFile(getRegistryPath(), JSON.stringify(registry, null, 2));
+  } catch (e) {
+    await log('ERROR', 'registry', 'save failed', { error: String(e) });
+  }
+}
+
+// Text extraction from message content
+function extractText(content: unknown): string | null {
+  if (typeof content === 'string') return content;
+  if (!content || typeof content !== 'object') return null;
+  const arr = content as unknown[];
+  if (Array.isArray(arr)) {
+    for (const block of arr) {
+      if (block && typeof block === 'object') {
+        const b = block as Record<string, unknown>;
+        if (b.type === 'text' && typeof b.text === 'string') return b.text;
+      }
+    }
+  }
+  return null;
+}
+
+// Tool result parsing
+function parseSuccessFromContent(content: unknown): { toolName?: string; success: boolean } {
+  const text = extractText(content);
+  if (!text) return { success: false };
+
+  // Success markers
+  const hasSuccess = text.includes('✅') || 
+    /\bsuccess\b/i.test(text) || 
+    /\bdone\b/i.test(text) ||
+    /\bcompleted\b/i.test(text);
+  
+  // Failure markers
+  const hasFailure = text.includes('❌') || 
+    /\berror\b/i.test(text) || 
+    /\bfailed\b/i.test(text);
+
+  if (hasFailure) return { success: false };
+  if (!hasSuccess) return { success: false };
+
+  // Extract tool name from text
+  const toolMatch = text.match(/tool[_\s]?call[s]?[:\s]+([a-zA-Z_][a-zA-Z0-9_]*)/i);
+  if (toolMatch) return { toolName: toolMatch[1].toLowerCase(), success: true };
+
+  return { success: false };
+}
+
+function parseToolCallsFromBody(body: unknown): ToolCall[] {
+  const calls: ToolCall[] = [];
+  if (!body) return calls;
+
+  const bodyStr = String(body);
+  
+  // Find all tool name patterns
+  const toolCallRegex = /"name"\s*:\s*"([a-zA-Z_][a-zA-Z0-9_]*)"/g;
+  let match;
+  while ((match = toolCallRegex.exec(bodyStr)) !== null) {
+    const name = match[1];
+    if (!calls.some(c => c.name === name)) {
+      calls.push({ name });
+    }
+  }
+
+  return calls;
+}
+
+// Skill generation
+async function generateSkill(name: string, examples: ToolCall[]): Promise<string> {
+  const skillPath = path.join(config.skill_dir, name, 'SKILL.md');
+  const skillDir = path.dirname(skillPath);
+  
+  await fs.promises.mkdir(skillDir, { recursive: true });
+
+  const description = `Auto-generated skill from pattern detection. Use the \`${name}\` tool for this task pattern.`;
+  const content = `# ${name}
+
+${description}
+
+## When to Use
+
+This skill handles tasks that match the detected pattern: \`${name}\`
+
+## Tool
+
+\`\`\`typescript
+// Pattern: ${name}
+// Examples: ${examples.length}
+\`\`\`
+
+---
+*Auto-generated by openclaw-skill-evolution*
+`;
+
+  await fs.promises.writeFile(skillPath, content);
+  await log('INFO', 'skill', 'generated', { name, path: skillPath });
+  
+  return skillPath;
+}
+
+function hasSkillFile(name: string): boolean {
+  const skillPath = path.join(config.skill_dir, name, 'SKILL.md');
+  return fs.existsSync(skillPath);
+}
+
+function notifySkillExists(messages: string[] | undefined, name: string): void {
+  if (!config.notify_on_update) return;
+  const msg = `🧬 Skill "${name}" is ready! Restart the Gateway to load it.`;
+  if (messages) messages.push(msg);
+  log('INFO', 'notify', 'skill exists', { name, message: msg });
+}
+
+async function notifyNewSkill(messages: string[] | undefined, name: string, skillPath: string): Promise<void> {
+  if (!config.notify_on_update) return;
+  const msg = `🧬 New skill "${name}" created at ${skillPath}! Restart the Gateway to load it.`;
+  if (messages) messages.push(msg);
+  log('INFO', 'notify', 'new skill', { name, path: skillPath, message: msg });
+}
+
+// Main handler
+async function handleEvent(event: HookEvent): Promise<void> {
+  if (event.type !== 'message:preprocessed') return;
+  
+  const body = event.context.bodyForAgent;
+  if (!body) return;
+
+  const toolCalls = parseToolCallsFromBody(body);
+  if (toolCalls.length === 0) return;
+
+  for (const tc of toolCalls) {
+    if (config.exclude_patterns.includes(tc.name)) continue;
+
+    const { success } = parseSuccessFromContent(body);
+    
+    if (success) {
+      const existing = registry.patterns[tc.name];
+      if (existing) {
+        existing.count++;
+        existing.last_seen = new Date().toISOString();
+        existing.success_examples.push(tc);
+        if (existing.success_examples.length > 10) {
+          existing.success_examples = existing.success_examples.slice(-10);
+        }
+      } else {
+        registry.patterns[tc.name] = {
+          count: 1,
+          first_seen: new Date().toISOString(),
+          last_seen: new Date().toISOString(),
+          success_examples: [tc],
+        };
+      }
+
+      const entry = registry.patterns[tc.name];
+      await log('DEBUG', 'handler', 'tool success', { name: tc.name, count: entry.count, threshold: config.threshold });
+
+      if (entry.count === config.threshold) {
+        await log('INFO', 'handler', 'threshold reached', { name: tc.name });
+
+        if (hasSkillFile(tc.name)) {
+          notifySkillExists(event.messages, tc.name);
+        } else {
+          const skillPath = await generateSkill(tc.name, entry.success_examples);
+          entry.skill_path = skillPath;
+          await notifyNewSkill(event.messages, tc.name, skillPath);
+        }
+      }
+
+      await saveRegistry();
+    }
+  }
+}
+
+// Default export - this is the hook handler
+async function skillEvolutionHook(event: HookEvent): Promise<void> {
+  try {
+    if (!initialized) {
+      await loadConfig();
+      await loadRegistry();
+      initialized = true;
+    }
+
+    if (!config.enabled) return;
+
+    await handleEvent(event);
+  } catch (e) {
+    await log('ERROR', 'hook', 'error', { error: String(e), eventType: event.type });
+  }
+}
+
+export default skillEvolutionHook;
