@@ -2,8 +2,7 @@
   "name": "openclaw-skill-evolution",
   "version": "0.1.0",
   "description": "Hermes-style skill self-evolution hook for OpenClaw. Detects successful tool patterns and writes them as reusable Skills.",
-  "main": "dist/handler.js",
-  "types": "dist/handler.d.ts",
+  "main": "handler.js",
   "scripts": {
     "build": "tsc",
     "test": "jest",
@@ -11,9 +10,12 @@
     "dev": "tsc --watch"
   },
   "files": [
-    "dist",
+    "handler.js",
     "HOOK.md",
-    "patterns/.gitkeep"
+    "package.json",
+    "patterns/.gitkeep",
+    "README.md",
+    "AGENTS.md"
   ],
   "keywords": [
     "openclaw",
