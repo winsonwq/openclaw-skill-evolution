@@ -17,32 +17,23 @@ const TARGET_DIR = path.join(os.homedir(), '.openclaw', 'hooks', HOOK_NAME);
 // Get the global npm modules directory
 const globalRoot = child_process.execSync('npm root -g').toString().trim();
 
-// The package directory (parent of scripts/, or __dirname if scripts is at root)
-const pkgDir = path.dirname(__dirname);
+// The package directory (parent of scripts/)
+const pkgDir = path.dirname(path.dirname(__filename));
 
-// Only install if this is a global install (pkg is under npm global root)
-if (pkgDir === globalRoot || !pkgDir.startsWith(globalRoot + '/')) {
-  // Local install - skip auto-install
+// Only install if this is a global install
+if (pkgDir !== globalRoot && !pkgDir.startsWith(globalRoot + '/')) {
   console.log('[postinstall] Local install detected, skipping auto-install.');
   process.exit(0);
 }
 
 console.log(`[postinstall] Global install detected. Installing ${HOOK_NAME} to ${TARGET_DIR}`);
 
-// Files/dirs to copy (relative to package root)
-const COPY_ENTRIES = [
-  'handler.js',
-  'HOOK.md',
-  'package.json',
-  'patterns',
-  'README.md',
-  'AGENTS.md',
-];
-
 try {
   fs.mkdirSync(TARGET_DIR, { recursive: true });
 
-  for (const entry of COPY_ENTRIES) {
+  const entries = ['hook', 'package.json', 'patterns', 'README.md', 'AGENTS.md'];
+
+  for (const entry of entries) {
     const src = path.join(pkgDir, entry);
     const dest = path.join(TARGET_DIR, entry);
 
