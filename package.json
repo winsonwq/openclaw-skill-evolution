@@ -5,7 +5,8 @@
   "openclaw": {
     "hooks": {
       "openclaw-skill-evolution": "./handler.js"
-    }
+    },
+    "extensions": ["./handler.js"]
   },
   "main": "handler.js",
   "scripts": {
