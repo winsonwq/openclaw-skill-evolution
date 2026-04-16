@@ -1,0 +1,1 @@
+{"version":3,"file":"skill-builder.d.ts","sourceRoot":"","sources":["../src/skill-builder.ts"],"names":[],"mappings":"AAEA,OAAO,EAAE,YAAY,EAAoB,MAAM,SAAS,CAAA;AAGxD,qBAAa,YAAY;IACX,OAAO,CAAC,QAAQ;gBAAR,QAAQ,EAAE,MAAM;IAEpC,OAAO,CAAC,iBAAiB;IAKzB,OAAO,CAAC,iBAAiB;IAiCnB,KAAK,CAAC,OAAO,EAAE,YAAY,GAAG,OAAO,CAAC,MAAM,CAAC;IA6BnD,OAAO,CAAC,YAAY;CAIrB"}
