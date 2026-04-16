@@ -3,7 +3,9 @@
   "version": "0.1.0",
   "description": "Hermes-style skill self-evolution hook for OpenClaw. Detects successful tool patterns and writes them as reusable Skills.",
   "openclaw": {
-    "hooks": ["./hook"]
+    "hooks": [
+      "./hook"
+    ]
   },
   "main": "handler.js",
   "scripts": {
@@ -34,6 +36,7 @@
     "node": ">=18"
   },
   "devDependencies": {
+    "@types/jest": "^30.0.0",
     "@types/node": "^25.6.0",
     "ts-jest": "^29.4.9",
     "typescript": "^6.0.2"
