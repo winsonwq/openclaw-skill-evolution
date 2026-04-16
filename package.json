@@ -12,13 +12,15 @@
     "build": "tsc",
     "test": "jest",
     "test:coverage": "jest --coverage",
-    "dev": "tsc --watch"
+    "dev": "tsc --watch",
+    "postinstall": "node scripts/postinstall.js"
   },
   "files": [
     "handler.js",
     "HOOK.md",
     "package.json",
     "patterns/.gitkeep",
+    "scripts/",
     "README.md",
     "AGENTS.md"
   ],
